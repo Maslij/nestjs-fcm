@@ -1,90 +1,119 @@
-import { Injectable } from '@nestjs/common/decorators/core/injectable.decorator';
-import { Inject, Logger } from '@nestjs/common';
+import { Injectable, Inject, Logger } from '@nestjs/common';
 import { FCM_OPTIONS } from '../fcm.constants';
 import { FcmOptions } from '../interfaces/fcm-options.interface';
-import * as firebaseAdmin from 'firebase-admin';
+import { initializeApp, cert, getApps } from 'firebase-admin/app';
+import {
+  getMessaging,
+  MulticastMessage,
+  MessagingPayload,
+  SendResponse,
+  BatchResponse,
+} from 'firebase-admin/messaging';
 
 @Injectable()
 export class FcmService {
+  private readonly logger = new Logger(FcmService.name);
+  private readonly messaging = getMessaging();
+
   constructor(
-    @Inject(FCM_OPTIONS) private fcmOptionsProvider: FcmOptions,
-    private readonly logger: Logger,
-  ) {}
+    @Inject(FCM_OPTIONS) private readonly fcmOptionsProvider: FcmOptions,
+  ) {
+    // Initialize Firebase app if it hasn't been initialized yet
+    if (!getApps().length) {
+      initializeApp({
+        credential: cert(this.fcmOptionsProvider.firebaseSpecsPath),
+      });
+      this.logger.log('Firebase app initialized');
+    }
+  }
 
   async sendNotification(
-    deviceIds: Array<string>,
-    payload: firebaseAdmin.messaging.MessagingPayload,
+    deviceIds: string[],
+    payload: MessagingPayload,
     silent: boolean,
-    imageUrl?: string
-  ) {
-    if (deviceIds.length == 0) {
-      throw new Error('You provide an empty device ids list!');
+    imageUrl?: string,
+  ): Promise<{
+    failureCount: number;
+    successCount: number;
+    failedDeviceIds: string[];
+  }> {
+    if (!deviceIds.length) {
+      this.logger.warn('Empty device IDs list provided');
+      throw new Error('You provided an empty device IDs list!');
     }
 
-    if (firebaseAdmin.apps.length === 0) {
-      firebaseAdmin.initializeApp({
-        credential: firebaseAdmin.credential.cert(
-          this.fcmOptionsProvider.firebaseSpecsPath,
-        ),
-      });
-    }
+    const batchSize = 500;
+    let failureCount = 0;
+    let successCount = 0;
+    const failedDeviceIds: string[] = [];
 
-    const body: firebaseAdmin.messaging.MulticastMessage = {
-      tokens: deviceIds,
+    // Prepare the message template
+    const messageTemplate: Partial<MulticastMessage> = {
       data: payload?.data,
       notification: {
         title: payload?.notification?.title,
         body: payload?.notification?.body,
-        imageUrl
+        imageUrl,
       },
       apns: {
         payload: {
           aps: {
             sound: payload?.notification?.sound,
-            contentAvailable: silent ? true : false,
-            mutableContent: true
-          }
+            'content-available': silent ? 1 : undefined,
+            'mutable-content': 1,
+          },
         },
         fcmOptions: {
-         imageUrl
-        }
+          imageUrl,
+        },
       },
       android: {
         priority: 'high',
-        ttl: 60 * 60 * 24,
+        ttl: 86400000, // 24 hours in milliseconds
         notification: {
-          sound: payload?.notification?.sound
-        }
-      }
-    }
+          sound: payload?.notification?.sound,
+        },
+      },
+    };
 
-    let result = null
-    let failureCount = 0
-    let successCount = 0
-    const failedDeviceIds = []
+    try {
+      while (deviceIds.length) {
+        const tokensBatch = deviceIds.splice(0, batchSize);
+        const multicastMessage: MulticastMessage = {
+          ...messageTemplate,
+          tokens: tokensBatch,
+        } as MulticastMessage;
 
-    while(deviceIds.length) {
-      try {
-        result = await firebaseAdmin
-          .messaging()
-          .sendMulticast({...body, tokens: deviceIds.splice(0,500)}, false)
-          if (result.failureCount > 0) {
-            const failedTokens = [];
-            result.responses.forEach((resp, id) => {
-              if (!resp.success) {
-                failedTokens.push(deviceIds[id]);
-              }
-            });
-            failedDeviceIds.push(...failedTokens)
+        const response: BatchResponse = await this.messaging.sendEachForMulticast(
+          multicastMessage,
+        );
+
+        successCount += response.successCount;
+        failureCount += response.failureCount;
+
+        response.responses.forEach((resp: SendResponse, idx: number) => {
+          if (!resp.success) {
+            const failedToken = tokensBatch[idx];
+            failedDeviceIds.push(failedToken);
+            this.logger.error(
+              `Failed to send notification to ${failedToken}: ${resp.error?.message}`,
+            );
           }
-          failureCount += result.failureCount;
-          successCount += result.successCount;
-      } catch (error) {
-        this.logger.error(error.message, error.stackTrace, 'nestjs-fcm');
-        throw error;
+        });
+
+        this.logger.log(
+          `Batch processed: ${response.successCount} successful, ${response.failureCount} failed.`,
+        );
       }
- 
+    } catch (error) {
+      this.logger.error('Error sending notifications', error.stack);
+      throw error;
     }
-    return {failureCount, successCount, failedDeviceIds};
+
+    this.logger.log(
+      `Notifications sent: ${successCount} successful, ${failureCount} failed in total.`,
+    );
+
+    return { failureCount, successCount, failedDeviceIds };
   }
 }
