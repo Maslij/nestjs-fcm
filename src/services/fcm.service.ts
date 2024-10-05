@@ -8,12 +8,13 @@ import {
   MessagingPayload,
   SendResponse,
   BatchResponse,
+  Messaging,
 } from 'firebase-admin/messaging';
 
 @Injectable()
 export class FcmService {
   private readonly logger = new Logger(FcmService.name);
-  private readonly messaging = getMessaging();
+  private messaging: Messaging;
 
   constructor(
     @Inject(FCM_OPTIONS) private readonly fcmOptionsProvider: FcmOptions,
@@ -25,6 +26,8 @@ export class FcmService {
       });
       this.logger.log('Firebase app initialized');
     }
+    // Initialize messaging after the app has been initialized
+    this.messaging = getMessaging();
   }
 
   async sendNotification(
@@ -84,9 +87,8 @@ export class FcmService {
           tokens: tokensBatch,
         } as MulticastMessage;
 
-        const response: BatchResponse = await this.messaging.sendEachForMulticast(
-          multicastMessage,
-        );
+        const response: BatchResponse =
+          await this.messaging.sendEachForMulticast(multicastMessage);
 
         successCount += response.successCount;
         failureCount += response.failureCount;
