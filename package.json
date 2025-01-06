@@ -33,7 +33,7 @@
   },
   "bugs": "https://github.com/CostianuRazvan/nestjs-fcm",
   "peerDependencies": {
-    "@nestjs/common": "^7.6.12"
+    "@nestjs/common": "^10.3.3"
   },
   "dependencies": {
     "firebase-admin": "^12.6.00",
